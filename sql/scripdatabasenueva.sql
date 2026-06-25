@@ -114,14 +114,6 @@ CREATE TABLE IF NOT EXISTS vet_servicios (
     FOREIGN KEY (id_servicio) REFERENCES servicios(id_servicio)
 );
 
-CREATE TABLE IF NOT EXISTS vet_especies (
-    id_vet INT NOT NULL,
-    id_especie INT NOT NULL,
-    PRIMARY KEY (id_vet, id_especie),
-    FOREIGN KEY (id_vet) REFERENCES veterinarias(id_vet),
-    FOREIGN KEY (id_especie) REFERENCES especies(id_especie)
-);
-
 -------------------------------
 --Cambios o modificaciones DB--
 -------------------------------

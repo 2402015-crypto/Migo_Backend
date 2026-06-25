@@ -269,6 +269,61 @@ app.get('/api/veterinarias', (req, res) => {
     });
 });
 
+// Actualizar datos de una veterinaria
+app.put('/api/veterinarias/:id', (req, res) => {
+    const { 
+        nombre_establecimiento, 
+        descripcion, 
+        correo_negocio, 
+        telefono_local, 
+        id_colonia, 
+        imagen_logo, 
+        sitio_web 
+    } = req.body;
+
+    const sql = `
+        UPDATE veterinarias 
+        SET nombre_establecimiento = ?, 
+            descripcion = ?, 
+            correo_negocio = ?, 
+            telefono_local = ?, 
+            id_colonia = ?, 
+            imagen_logo = ?, 
+            sitio_web = ?
+        WHERE id_vet = ?
+    `;
+
+    db.query(sql, [
+        nombre_establecimiento, 
+        descripcion, 
+        correo_negocio, 
+        telefono_local, 
+        id_colonia, 
+        imagen_logo, 
+        sitio_web, 
+        req.params.id
+    ], (err, result) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (result.affectedRows === 0) return res.status(404).json({ message: "Veterinaria no encontrada" });
+        res.json({ message: "Veterinaria actualizada correctamente" });
+    });
+});
+
+// Subir logo de veterinaria
+app.post('/api/veterinarias/:id/logo', upload.single('logo'), (req, res) => {
+    const id_vet = req.params.id;
+    if (!req.file) return res.status(400).json({ message: 'No se subió archivo' });
+
+    const ruta = `/uploads/${req.file.filename}`;
+    const sql = 'UPDATE veterinarias SET imagen_logo = ? WHERE id_vet = ?';
+
+    db.query(sql, [ruta, id_vet], (err, result) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (result.affectedRows === 0) return res.status(404).json({ message: "Veterinaria no encontrada" });
+        res.json({ message: 'Logo actualizado correctamente', imagen_logo: ruta });
+    });
+});
+
 //Obtener detalles de una veterinaria específica
 app.get('/api/veterinaria/:id', (req, res) => {
     const sql = `
@@ -348,6 +403,7 @@ app.get('/api/comentarios/:id_publi', (req, res) => {
         res.json(results);
     });
 });
+console.log("ID del veterinario:", idVet);
 
 //  Publicar comentario
 app.post('/api/comentarios', (req, res) => {
