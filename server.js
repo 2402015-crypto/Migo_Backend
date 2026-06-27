@@ -301,6 +301,101 @@ app.get('/api/veterinarias', (req, res) => {
     });
 });
 
+// Obtener todas las veterinarias con horarios y servicios
+app.get('/api/veterinarias/detallado', (req, res) => {
+    const sql = `
+        SELECT v.*, c.nombre AS nombre_colonia
+        FROM veterinarias v
+        LEFT JOIN colonias c ON v.id_colonia = c.id_colonia
+    `;
+    db.query(sql, (err, vets) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (vets.length === 0) return res.json([]);
+
+        // Para cada veterinaria, traer horarios y servicios
+        const promises = vets.map(vet => {
+            return new Promise((resolve, reject) => {
+                // Horarios
+                const sqlHorarios = `
+                    SELECT h.id_dia, d.nombre AS dia, h.hora_apertura, h.hora_cierre, h.cerrado
+                    FROM horarios_vet h
+                    JOIN dias_semana d ON h.id_dia = d.id_dia
+                    WHERE h.id_vet = ?
+                    ORDER BY h.id_dia ASC
+                `;
+                db.query(sqlHorarios, [vet.id_vet], (err, horarios) => {
+                    if (err) return reject(err);
+                    vet.horarios = horarios;
+
+                    // Servicios
+                    const sqlServicios = `
+                        SELECT s.id_servicio, s.nombre
+                        FROM vet_servicios vs
+                        JOIN servicios s ON vs.id_servicio = s.id_servicio
+                        WHERE vs.id_vet = ?
+                    `;
+                    db.query(sqlServicios, [vet.id_vet], (err, servicios) => {
+                        if (err) return reject(err);
+                        vet.servicios = servicios;
+                        resolve(vet);
+                    });
+                });
+            });
+        });
+
+        Promise.all(promises)
+            .then(result => res.json(result))
+            .catch(error => res.status(500).json({ error: error.message }));
+    });
+});
+
+// Obtener veterinaria con todos sus datos (incluye horarios y servicios)
+app.get('/api/veterinaria/:id/detallado', (req, res) => {
+    const { id } = req.params;
+
+    const sqlVet = `
+        SELECT v.*, c.nombre AS nombre_colonia
+        FROM veterinarias v
+        LEFT JOIN colonias c ON v.id_colonia = c.id_colonia
+        WHERE v.id_vet = ?
+    `;
+
+    db.query(sqlVet, [id], (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (results.length === 0) return res.status(404).json({ message: "Veterinaria no encontrada" });
+
+        const vet = results[0];
+
+        // Obtener horarios
+        const sqlHorarios = `
+            SELECT h.id_dia, d.nombre AS dia, h.hora_apertura, h.hora_cierre, h.cerrado
+            FROM horarios_vet h
+            JOIN dias_semana d ON h.id_dia = d.id_dia
+            WHERE h.id_vet = ?
+            ORDER BY h.id_dia ASC
+        `;
+        db.query(sqlHorarios, [id], (err, horarios) => {
+            if (err) return res.status(500).json({ error: err.message });
+            vet.horarios = horarios;
+
+            // Obtener servicios
+            const sqlServicios = `
+                SELECT s.id_servicio, s.nombre
+                FROM vet_servicios vs
+                JOIN servicios s ON vs.id_servicio = s.id_servicio
+                WHERE vs.id_vet = ?
+            `;
+            db.query(sqlServicios, [id], (err, servicios) => {
+                if (err) return res.status(500).json({ error: err.message });
+                vet.servicios = servicios;
+
+                res.json(vet);
+            });
+        });
+    });
+});
+
+
 // Actualizar datos de una veterinaria
 app.put('/api/veterinarias/:id', (req, res) => {
     const { 
