@@ -20,7 +20,7 @@ const db = mysql.createConnection({
 
 ///////Función para registrar logs////////
 function registrarLogLoginFallido(correo, detalle) {
-  console.log("Registrando log fallido:", correo, detalle); // Debug
+  console.log("Registrando log fallido:", correo, detalle);
   const sql = "INSERT INTO logs (correo, accion, detalle) VALUES (?, 'LOGIN_FALLIDO', ?)";
   db.query(sql, [correo, detalle], (err) => {
     if (err) {
@@ -30,7 +30,6 @@ function registrarLogLoginFallido(correo, detalle) {
     }
   });
 }
-
 
 
 // ENDPOINTS
@@ -102,7 +101,6 @@ app.post('/api/login', (req, res) => {
   });
 });
 
-
 // Actualizar perfil de usuario
 app.put('/api/usuarios/:id_usuario', (req, res) => {
     const { id_usuario } = req.params;
@@ -113,16 +111,9 @@ app.put('/api/usuarios/:id_usuario', (req, res) => {
         SET nombre = ?, apellido = ?, correo = ?, telefono = ?, direccion = ?, id_colonia = ?
         WHERE id_usuario = ?
     `;
-
-    const params = [nombre, apellido, correo, telefono, direccion, id_colonia, id_usuario];
-
-    db.query(sql, params, (err, result) => {
+    db.query(sql, [nombre, apellido, correo, telefono, direccion, id_colonia, id_usuario], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
-
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ message: "Usuario no encontrado" });
-        }
-
+        if (result.affectedRows === 0) return res.status(404).json({ message: "Usuario no encontrado" });
         res.json({ message: "Perfil actualizado correctamente" });
     });
 });
@@ -146,21 +137,31 @@ app.get('/api/especies', (req, res) => {
 
 ////////Publicaciones////////
 
-// Publicaciones (Listar con los JOINs para obtener los nombres de usuario, colonia, especie, tipo y estado)
+// ✅ GET publicaciones — incluye IDs raw para poder editar desde el frontend
 app.get('/api/publicaciones', (req, res) => {
     const sql = `
-        SELECT p.id_publi, p.nombre_pet, p.descripcion, p.fecha_publi,
-               u.id_usuario, u.nombre AS usuario, u.correo, u.telefono,
-               c.nombre AS nombre_colonia, 
-               e.nombre AS especie,
-               t.nombre AS tipo, 
-               est.nombre AS estado,
-               f.ruta_imagen
+        SELECT 
+            p.id_publi,
+            p.nombre_pet,
+            p.descripcion,
+            p.fecha_publi,
+            p.id_colonia  AS id_colonia_raw,
+            p.id_especie  AS id_especie_raw,
+            p.id_tipo     AS id_tipo_raw,
+            u.id_usuario,
+            u.nombre      AS usuario,
+            u.correo,
+            u.telefono,
+            c.nombre      AS nombre_colonia,
+            e.nombre      AS especie,
+            t.nombre      AS tipo,
+            est.nombre    AS estado,
+            f.ruta_imagen
         FROM publicaciones p
-        JOIN usuarios u ON p.id_usuario = u.id_usuario
-        JOIN colonias c ON p.id_colonia = c.id_colonia
-        JOIN especies e ON p.id_especie = e.id_especie
-        JOIN tipos_publi t ON p.id_tipo = t.id_tipo
+        JOIN usuarios u      ON p.id_usuario  = u.id_usuario
+        JOIN colonias c      ON p.id_colonia  = c.id_colonia
+        JOIN especies e      ON p.id_especie  = e.id_especie
+        JOIN tipos_publi t   ON p.id_tipo     = t.id_tipo
         JOIN estados_publi est ON p.id_estado = est.id_estado
         LEFT JOIN fotos_publi f ON p.id_publi = f.id_publi
         ORDER BY p.fecha_publi DESC
@@ -170,7 +171,6 @@ app.get('/api/publicaciones', (req, res) => {
         res.json(results);
     });
 });
-
 
 // Crear nueva publicación
 app.post('/api/publicaciones', (req, res) => {
@@ -185,7 +185,32 @@ app.post('/api/publicaciones', (req, res) => {
     });
 });
 
-//Obtencion de tipos de publicacion
+// ✅ Editar publicación — verifica que sea el dueño antes de actualizar
+app.put('/api/publicaciones/:id_publi', (req, res) => {
+    const { id_publi } = req.params;
+    const { id_usuario, id_colonia, id_especie, id_tipo, nombre_pet, descripcion } = req.body;
+
+    const checkSql = "SELECT id_usuario FROM publicaciones WHERE id_publi = ?";
+    db.query(checkSql, [id_publi], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (rows.length === 0) return res.status(404).json({ message: "Publicación no encontrada" });
+        if (rows[0].id_usuario !== parseInt(id_usuario)) {
+            return res.status(403).json({ message: "No tienes permiso para editar esta publicación" });
+        }
+
+        const sql = `
+            UPDATE publicaciones 
+            SET id_colonia = ?, id_especie = ?, id_tipo = ?, nombre_pet = ?, descripcion = ?
+            WHERE id_publi = ?
+        `;
+        db.query(sql, [id_colonia, id_especie, id_tipo, nombre_pet, descripcion, id_publi], (err) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ message: "Publicación actualizada correctamente" });
+        });
+    });
+});
+
+// Tipos de publicación
 app.get('/api/tipos_publi', (req, res) => {
     db.query('SELECT id_tipo, nombre FROM tipos_publi', (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -193,14 +218,14 @@ app.get('/api/tipos_publi', (req, res) => {
     });
 });
 
-// Subir foto
+// Subir foto de publicación
 app.post('/api/fotos/:id_publi', upload.single('foto'), (req, res) => {
     const id_publi = req.params.id_publi;
     if (!req.file) return res.status(400).json({ message: 'No se subió archivo' });
 
     const ruta = `/uploads/${req.file.filename}`;
     const sql = 'INSERT INTO fotos_publi (id_publi, ruta_imagen) VALUES (?, ?)';
-    db.query(sql, [id_publi, ruta], (err, result) => {
+    db.query(sql, [id_publi, ruta], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Foto subida', ruta_imagen: ruta });
     });
@@ -236,31 +261,18 @@ app.post('/api/login-vet', (req, res) => {
   });
 });
 
-
 // Registro de veterinario
 app.post('/api/registro-vet', (req, res) => {
-    const {
-        nombre,
-        apellido,
-        correo,
-        contrasena,
-        id_colonia,
-        nombre_establecimiento,
-        direccion,
-        telefono
-    } = req.body;
+    const { nombre, apellido, correo, contrasena, id_colonia, nombre_establecimiento, direccion, telefono } = req.body;
 
     const checkSql = "SELECT id_usuario FROM usuarios WHERE correo = ?";
     db.query(checkSql, [correo], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
-        if (rows.length > 0) {
-            return res.status(400).json({ error: "El correo ya está registrado" });
-        }
+        if (rows.length > 0) return res.status(400).json({ error: "El correo ya está registrado" });
 
         db.beginTransaction((err) => {
             if (err) return res.status(500).json({ error: "Error de conexión" });
 
-            // ✅ Inserta datos del usuario con dirección y teléfono
             const sqlUser = `
                 INSERT INTO usuarios (nombre, apellido, direccion, telefono, correo, contrasena, id_colonia, rol)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 'veterinario')
@@ -269,12 +281,7 @@ app.post('/api/registro-vet', (req, res) => {
                 if (err) return db.rollback(() => res.status(500).json({ error: err.message }));
 
                 const id_usuario = result.insertId;
-
-                // ✅ Inserta datos de la veterinaria (solo lo que tu frontend manda)
-                const sqlVet = `
-                    INSERT INTO veterinarias (id_usuario, nombre_establecimiento, id_colonia)
-                    VALUES (?, ?, ?)
-                `;
+                const sqlVet = `INSERT INTO veterinarias (id_usuario, nombre_establecimiento, id_colonia) VALUES (?, ?, ?)`;
                 db.query(sqlVet, [id_usuario, nombre_establecimiento, id_colonia], (err) => {
                     if (err) return db.rollback(() => res.status(500).json({ error: err.message }));
 
@@ -288,7 +295,7 @@ app.post('/api/registro-vet', (req, res) => {
     });
 });
 
-// Veterinarias
+// Veterinarias (listado simple)
 app.get('/api/veterinarias', (req, res) => {
     const sql = `
         SELECT v.*, c.nombre AS nombre_colonia 
@@ -301,7 +308,7 @@ app.get('/api/veterinarias', (req, res) => {
     });
 });
 
-// Obtener todas las veterinarias con horarios y servicios
+// Veterinarias con horarios y servicios
 app.get('/api/veterinarias/detallado', (req, res) => {
     const sql = `
         SELECT v.*, c.nombre AS nombre_colonia
@@ -312,10 +319,8 @@ app.get('/api/veterinarias/detallado', (req, res) => {
         if (err) return res.status(500).json({ error: err.message });
         if (vets.length === 0) return res.json([]);
 
-        // Para cada veterinaria, traer horarios y servicios
         const promises = vets.map(vet => {
             return new Promise((resolve, reject) => {
-                // Horarios
                 const sqlHorarios = `
                     SELECT h.id_dia, d.nombre AS dia, h.hora_apertura, h.hora_cierre, h.cerrado
                     FROM horarios_vet h
@@ -327,7 +332,6 @@ app.get('/api/veterinarias/detallado', (req, res) => {
                     if (err) return reject(err);
                     vet.horarios = horarios;
 
-                    // Servicios
                     const sqlServicios = `
                         SELECT s.id_servicio, s.nombre
                         FROM vet_servicios vs
@@ -349,24 +353,20 @@ app.get('/api/veterinarias/detallado', (req, res) => {
     });
 });
 
-// Obtener veterinaria con todos sus datos (incluye horarios y servicios)
+// Veterinaria individual con horarios y servicios
 app.get('/api/veterinaria/:id/detallado', (req, res) => {
     const { id } = req.params;
-
     const sqlVet = `
         SELECT v.*, c.nombre AS nombre_colonia
         FROM veterinarias v
         LEFT JOIN colonias c ON v.id_colonia = c.id_colonia
         WHERE v.id_vet = ?
     `;
-
     db.query(sqlVet, [id], (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         if (results.length === 0) return res.status(404).json({ message: "Veterinaria no encontrada" });
 
         const vet = results[0];
-
-        // Obtener horarios
         const sqlHorarios = `
             SELECT h.id_dia, d.nombre AS dia, h.hora_apertura, h.hora_cierre, h.cerrado
             FROM horarios_vet h
@@ -378,7 +378,6 @@ app.get('/api/veterinaria/:id/detallado', (req, res) => {
             if (err) return res.status(500).json({ error: err.message });
             vet.horarios = horarios;
 
-            // Obtener servicios
             const sqlServicios = `
                 SELECT s.id_servicio, s.nombre
                 FROM vet_servicios vs
@@ -388,48 +387,22 @@ app.get('/api/veterinaria/:id/detallado', (req, res) => {
             db.query(sqlServicios, [id], (err, servicios) => {
                 if (err) return res.status(500).json({ error: err.message });
                 vet.servicios = servicios;
-
                 res.json(vet);
             });
         });
     });
 });
 
-
 // Actualizar datos de una veterinaria
 app.put('/api/veterinarias/:id', (req, res) => {
-    const { 
-        nombre_establecimiento, 
-        descripcion, 
-        correo_negocio, 
-        telefono_local, 
-        id_colonia, 
-        imagen_logo, 
-        sitio_web 
-    } = req.body;
-
+    const { nombre_establecimiento, descripcion, correo_negocio, telefono_local, id_colonia, imagen_logo, sitio_web } = req.body;
     const sql = `
         UPDATE veterinarias 
-        SET nombre_establecimiento = ?, 
-            descripcion = ?, 
-            correo_negocio = ?, 
-            telefono_local = ?, 
-            id_colonia = ?, 
-            imagen_logo = ?, 
-            sitio_web = ?
+        SET nombre_establecimiento = ?, descripcion = ?, correo_negocio = ?, 
+            telefono_local = ?, id_colonia = ?, imagen_logo = ?, sitio_web = ?
         WHERE id_vet = ?
     `;
-
-    db.query(sql, [
-        nombre_establecimiento, 
-        descripcion, 
-        correo_negocio, 
-        telefono_local, 
-        id_colonia, 
-        imagen_logo, 
-        sitio_web, 
-        req.params.id
-    ], (err, result) => {
+    db.query(sql, [nombre_establecimiento, descripcion, correo_negocio, telefono_local, id_colonia, imagen_logo, sitio_web, req.params.id], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         if (result.affectedRows === 0) return res.status(404).json({ message: "Veterinaria no encontrada" });
         res.json({ message: "Veterinaria actualizada correctamente" });
@@ -442,9 +415,7 @@ app.post('/api/veterinarias/:id/logo', upload.single('logo'), (req, res) => {
     if (!req.file) return res.status(400).json({ message: 'No se subió archivo' });
 
     const ruta = `/uploads/${req.file.filename}`;
-    const sql = 'UPDATE veterinarias SET imagen_logo = ? WHERE id_vet = ?';
-
-    db.query(sql, [ruta, id_vet], (err, result) => {
+    db.query('UPDATE veterinarias SET imagen_logo = ? WHERE id_vet = ?', [ruta, id_vet], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         if (result.affectedRows === 0) return res.status(404).json({ message: "Veterinaria no encontrada" });
         res.json({ message: 'Logo actualizado correctamente', imagen_logo: ruta });
@@ -453,7 +424,6 @@ app.post('/api/veterinarias/:id/logo', upload.single('logo'), (req, res) => {
 
 // Obtener horarios de una veterinaria
 app.get('/api/horarios/:idVet', (req, res) => {
-    const { idVet } = req.params;
     const sql = `
         SELECT h.id_horario, h.id_vet, h.id_dia, d.nombre AS dia, 
                h.hora_apertura, h.hora_cierre, h.cerrado
@@ -462,7 +432,7 @@ app.get('/api/horarios/:idVet', (req, res) => {
         WHERE h.id_vet = ?
         ORDER BY h.id_dia ASC
     `;
-    db.query(sql, [idVet], (err, rows) => {
+    db.query(sql, [req.params.idVet], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(rows);
     });
@@ -471,17 +441,14 @@ app.get('/api/horarios/:idVet', (req, res) => {
 // Actualizar horarios de una veterinaria
 app.put('/api/horarios/:idVet', (req, res) => {
     const { idVet } = req.params;
-    const horarios = req.body; // objeto con id_dia como clave
+    const horarios = req.body;
 
     db.beginTransaction(err => {
         if (err) return res.status(500).json({ error: "Error de conexión" });
 
         const dias = Object.keys(horarios);
-
-        // Procesar cada día
         dias.forEach(id_dia => {
             const { hora_apertura, hora_cierre, cerrado } = horarios[id_dia];
-
             const sql = `
                 INSERT INTO horarios_vet (id_vet, id_dia, hora_apertura, hora_cierre, cerrado)
                 VALUES (?, ?, ?, ?, ?)
@@ -490,7 +457,6 @@ app.put('/api/horarios/:idVet', (req, res) => {
                     hora_cierre = VALUES(hora_cierre),
                     cerrado = VALUES(cerrado)
             `;
-
             db.query(sql, [idVet, id_dia, hora_apertura || null, hora_cierre || null, cerrado ? 1 : 0], (err) => {
                 if (err) return db.rollback(() => res.status(500).json({ error: err.message }));
             });
@@ -503,10 +469,9 @@ app.put('/api/horarios/:idVet', (req, res) => {
     });
 });
 
-// Obtener días de la semana
+// Días de la semana
 app.get('/api/dias-semana', (req, res) => {
-    const sql = "SELECT id_dia, nombre FROM dias_semana ORDER BY id_dia ASC";
-    db.query(sql, (err, rows) => {
+    db.query("SELECT id_dia, nombre FROM dias_semana ORDER BY id_dia ASC", (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(rows);
     });
@@ -516,9 +481,7 @@ app.get('/api/dias-semana', (req, res) => {
 app.post('/api/servicios', (req, res) => {
     const { nombre } = req.body;
     if (!nombre) return res.status(400).json({ error: "El nombre del servicio es obligatorio" });
-
-    const sql = "INSERT INTO servicios (nombre) VALUES (?)";
-    db.query(sql, [nombre], (err, result) => {
+    db.query("INSERT INTO servicios (nombre) VALUES (?)", [nombre], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: "Servicio creado correctamente", id_servicio: result.insertId });
     });
@@ -527,7 +490,7 @@ app.post('/api/servicios', (req, res) => {
 // Asociar servicios a una veterinaria
 app.post('/api/vet-servicios/:idVet', (req, res) => {
     const { idVet } = req.params;
-    const serviciosSeleccionados = req.body; // array de IDs de servicios
+    const serviciosSeleccionados = req.body;
 
     if (!Array.isArray(serviciosSeleccionados)) {
         return res.status(400).json({ error: "Se requiere un array de servicios" });
@@ -536,19 +499,13 @@ app.post('/api/vet-servicios/:idVet', (req, res) => {
     db.beginTransaction(err => {
         if (err) return res.status(500).json({ error: "Error de conexión" });
 
-        // Eliminar asociaciones previas
-        const deleteSql = "DELETE FROM vet_servicios WHERE id_vet = ?";
-        db.query(deleteSql, [idVet], (err) => {
+        db.query("DELETE FROM vet_servicios WHERE id_vet = ?", [idVet], (err) => {
             if (err) return db.rollback(() => res.status(500).json({ error: err.message }));
 
-            // Insertar nuevas asociaciones
             if (serviciosSeleccionados.length > 0) {
-                const insertSql = "INSERT INTO vet_servicios (id_vet, id_servicio) VALUES ?";
                 const values = serviciosSeleccionados.map(id_servicio => [idVet, id_servicio]);
-
-                db.query(insertSql, [values], (err) => {
+                db.query("INSERT INTO vet_servicios (id_vet, id_servicio) VALUES ?", [values], (err) => {
                     if (err) return db.rollback(() => res.status(500).json({ error: err.message }));
-
                     db.commit(err => {
                         if (err) return db.rollback(() => res.status(500).json({ error: "Error al guardar servicios" }));
                         res.json({ message: "Servicios asociados correctamente" });
@@ -566,8 +523,7 @@ app.post('/api/vet-servicios/:idVet', (req, res) => {
 
 // Obtener todos los servicios
 app.get('/api/servicios', (req, res) => {
-    const sql = "SELECT id_servicio, nombre FROM servicios ORDER BY nombre ASC";
-    db.query(sql, (err, rows) => {
+    db.query("SELECT id_servicio, nombre FROM servicios ORDER BY nombre ASC", (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(rows);
     });
@@ -575,21 +531,19 @@ app.get('/api/servicios', (req, res) => {
 
 // Obtener servicios de una veterinaria
 app.get('/api/vet-servicios/:idVet', (req, res) => {
-    const { idVet } = req.params;
     const sql = `
         SELECT s.id_servicio, s.nombre
         FROM vet_servicios vs
         JOIN servicios s ON vs.id_servicio = s.id_servicio
         WHERE vs.id_vet = ?
     `;
-    db.query(sql, [idVet], (err, rows) => {
+    db.query(sql, [req.params.idVet], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(rows);
     });
 });
 
-
-//Obtener detalles de una veterinaria específica
+// Obtener detalles de una veterinaria específica
 app.get('/api/veterinaria/:id', (req, res) => {
     const sql = `
         SELECT v.*, c.nombre AS nombre_colonia 
@@ -604,7 +558,7 @@ app.get('/api/veterinaria/:id', (req, res) => {
     });
 });
 
-//Obtener reseñas de una veterinaria
+// Obtener reseñas de una veterinaria
 app.get('/api/resenas/:id', (req, res) => {
     const sql = `
         SELECT r.*, CONCAT(u.nombre, ' ', u.apellido) AS nombre_completo 
@@ -618,22 +572,20 @@ app.get('/api/resenas/:id', (req, res) => {
     });
 });
 
-//Publicar Resenas
+// Publicar reseña
 app.post('/api/resenas', (req, res) => {
-    console.log("Datos recibidos en el servidor:", req.body); // <--- MIRA LA CONSOLA DEL SERVIDOR (NODE)
-
+    console.log("Datos recibidos en el servidor:", req.body);
     const { id_vet, id_usuario, comentario, calificacion } = req.body;
 
-    // Si alguno es undefined, aquí veremos qué falta
     if (!id_vet || !id_usuario) {
         return res.status(400).json({ message: "Faltan datos obligatorios" });
     }
 
-    const sql = "INSERT INTO resenas (id_vet, id_usuario, comentario, calificacion) VALUES (?, ?, ?, ?)";
-    db.query(sql, [id_vet, id_usuario, comentario, calificacion], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Reseña publicada con éxito' });
-    });
+    db.query("INSERT INTO resenas (id_vet, id_usuario, comentario, calificacion) VALUES (?, ?, ?, ?)",
+        [id_vet, id_usuario, comentario, calificacion], (err) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ message: 'Reseña publicada con éxito' });
+        });
 });
 
 // Editar reseña
@@ -654,7 +606,7 @@ app.delete('/api/resenas/:id', (req, res) => {
     });
 });
 
-//  Obtener comentarios
+// Obtener comentarios de una publicación
 app.get('/api/comentarios/:id_publi', (req, res) => {
     const sql = `
         SELECT c.*, CONCAT(u.nombre, ' ', u.apellido) AS nombre_completo 
@@ -669,42 +621,37 @@ app.get('/api/comentarios/:id_publi', (req, res) => {
     });
 });
 
-//  Publicar comentario
+// Publicar comentario
 app.post('/api/comentarios', (req, res) => {
     const { id_publi, id_usuario, comentario } = req.body;
-    const sql = "INSERT INTO comentarios (id_publi, id_usuario, comentario) VALUES (?, ?, ?)";
-    db.query(sql, [id_publi, id_usuario, comentario], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Comentario publicado', id: result.insertId });
-    });
+    db.query("INSERT INTO comentarios (id_publi, id_usuario, comentario) VALUES (?, ?, ?)",
+        [id_publi, id_usuario, comentario], (err, result) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ message: 'Comentario publicado', id: result.insertId });
+        });
 });
 
-//  Eliminar comentario 
+// Eliminar comentario
 app.delete('/api/comentarios/:id_comentario/:id_usuario', (req, res) => {
     const { id_comentario, id_usuario } = req.params;
-
-    const sql = "DELETE FROM comentarios WHERE id_comentario = ? AND id_usuario = ?";
-    db.query(sql, [id_comentario, id_usuario], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (result.affectedRows === 0) return res.status(403).json({ message: "No tienes permiso" });
-        res.json({ message: 'Comentario eliminado' });
-    });
+    db.query("DELETE FROM comentarios WHERE id_comentario = ? AND id_usuario = ?",
+        [id_comentario, id_usuario], (err, result) => {
+            if (err) return res.status(500).json({ error: err.message });
+            if (result.affectedRows === 0) return res.status(403).json({ message: "No tienes permiso" });
+            res.json({ message: 'Comentario eliminado' });
+        });
 });
 
 // Editar comentario
 app.put('/api/comentarios/:id_comentario', (req, res) => {
     const { comentario, id_usuario } = req.body;
     const { id_comentario } = req.params;
-
-    const sql = "UPDATE comentarios SET comentario = ? WHERE id_comentario = ? AND id_usuario = ?";
-
-    db.query(sql, [comentario, id_comentario, id_usuario], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (result.affectedRows === 0) {
-            return res.status(403).json({ message: "No tienes permiso para editar este comentario" });
-        }
-        res.json({ message: 'Comentario actualizado' });
-    });
+    db.query("UPDATE comentarios SET comentario = ? WHERE id_comentario = ? AND id_usuario = ?",
+        [comentario, id_comentario, id_usuario], (err, result) => {
+            if (err) return res.status(500).json({ error: err.message });
+            if (result.affectedRows === 0) return res.status(403).json({ message: "No tienes permiso para editar este comentario" });
+            res.json({ message: 'Comentario actualizado' });
+        });
 });
 
 app.listen(4000, () => console.log('Servidor corriendo en puerto 4000 🏃‍♂️'));
