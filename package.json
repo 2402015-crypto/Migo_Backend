@@ -1,7 +1,7 @@
 {
   "name": "backend",
   "version": "1.0.0",
-  "description": "(No Actualizado. Ver /config/modulos_api.sql para ver la info más reciente)",
+  "description": "Backend de MIGO para usuarios, publicaciones, veterinarias, reseñas y comentarios.",
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
