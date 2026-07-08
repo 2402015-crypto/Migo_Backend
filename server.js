@@ -12,8 +12,8 @@ const app = express();
 const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
-        user: 'bruno19benitez@gmail.com',
-        pass: 'pncs nwnn aaup jnng'
+        user: 'bm1998337@gmail.com',
+        pass: 'mdbv apah jebe gjae'
     }
 });
 
@@ -23,7 +23,7 @@ const FRONTEND_URL = 'http://localhost:5173';
 function enviarCorreoVerificacion(correoDestino, nombre, token) {
     const link = `http://localhost:4000/api/verificar-cuenta?token=${token}`;
     return transporter.sendMail({
-        from: '"MIGO - Comunidad de Mascotas" <bruno19benitez@gmail.com>',
+        from: '"MIGO - Comunidad de Mascotas" <bm1998337@gmail.com>',
         to: correoDestino,
         subject: 'Verifica tu cuenta en MIGO',
         html: `
@@ -42,7 +42,7 @@ function enviarCorreoVerificacion(correoDestino, nombre, token) {
     });
 }
 
-// ✅ Multer configurado para conservar la extensión del archivo original
+// Multer configurado para conservar la extensión del archivo original
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         cb(null, 'uploads/');
@@ -68,6 +68,30 @@ const db = mysql.createConnection({
     database: 'migo_db_VUE'
 });
 
+function asegurarColumnasUbicacionVeterinaria() {
+    const columnas = [
+        "ALTER TABLE veterinarias ADD COLUMN latitud DECIMAL(10,7) DEFAULT NULL",
+        "ALTER TABLE veterinarias ADD COLUMN longitud DECIMAL(10,7) DEFAULT NULL"
+    ];
+
+    columnas.forEach(sql => {
+        db.query(sql, err => {
+            if (err && err.code !== 'ER_DUP_FIELDNAME') {
+                console.error('No se pudo asegurar la columna de ubicación:', err.message);
+            }
+        });
+    });
+}
+
+db.connect(err => {
+    if (err) {
+        console.error('Error de conexión a la base de datos:', err.message);
+        return;
+    }
+
+    asegurarColumnasUbicacionVeterinaria();
+});
+
 ///////Función para registrar logs////////
 function registrarLogLoginFallido(correo, detalle) {
   console.log("Registrando log fallido:", correo, detalle);
@@ -87,7 +111,7 @@ function registrarLogLoginFallido(correo, detalle) {
 
 ///////USUARIO////////
 
-// ✅ Crear usuario — genera token de verificación y envía correo
+// Crear usuario — genera token de verificación y envía correo
 app.post('/api/usuarios', (req, res) => {
     const { nombre, apellido, correo, contrasena, telefono, direccion, id_colonia, rol } = req.body;
 
@@ -104,8 +128,8 @@ app.post('/api/usuarios', (req, res) => {
 
         const sql = `
             INSERT INTO usuarios 
-                (nombre, apellido, correo, contrasena, telefono, direccion, id_colonia, rol, verificado, token_verificacion, token_expira)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ${tokenExpiraSql})
+                (nombre, apellido, correo, contrasena, telefono, direccion, id_colonia, rol, fecha_registro, verificado, token_verificacion, token_expira)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), 0, ?, ${tokenExpiraSql})
         `;
         db.query(sql, [nombre, apellido, correo, contrasena, telefono, direccion, id_colonia, rol, token], async (err, result) => {
             if (err) return res.status(500).json({ error: err.message });
@@ -129,7 +153,7 @@ app.post('/api/usuarios', (req, res) => {
     });
 });
 
-// ✅ Verificar cuenta a través del link enviado por correo
+// Verificar cuenta a través del link enviado por correo
 app.get('/api/verificar-cuenta', (req, res) => {
     const { token } = req.query;
     if (!token) return res.status(400).send('Token no proporcionado.');
@@ -187,7 +211,7 @@ app.get('/api/usuarios/:id', (req, res) => {
     });
 });
 
-// ✅ Login de usuario (acepta rol 'usuario' y 'administrador', requiere cuenta verificada)
+// Login de usuario (acepta rol 'usuario' y 'administrador', requiere cuenta verificada)
 app.post('/api/login', (req, res) => {
   const { correo, contrasena } = req.body;
 
@@ -297,7 +321,7 @@ app.get('/api/publicaciones', (req, res) => {
     });
 });
 
-// ✅ Crear nueva publicación
+// Crear nueva publicación
 // El trigger trg_publicaciones_estado_inicial asigna id_estado = 'Pendiente' automáticamente,
 // por eso ya NO se envía id_estado desde el backend.
 app.post('/api/publicaciones', (req, res) => {
@@ -427,7 +451,7 @@ app.post('/api/login-vet', (req, res) => {
   });
 });
 
-// ✅ Registro de veterinario — ahora también requiere verificar el correo
+// Registro de veterinario — ahora también requiere verificar el correo
 app.post('/api/registro-vet', (req, res) => {
     const { nombre, apellido, correo, contrasena, id_colonia, nombre_establecimiento, direccion, telefono } = req.body;
 
@@ -444,8 +468,8 @@ app.post('/api/registro-vet', (req, res) => {
 
             const sqlUser = `
                 INSERT INTO usuarios 
-                    (nombre, apellido, direccion, telefono, correo, contrasena, id_colonia, rol, verificado, token_verificacion, token_expira)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'veterinario', 0, ?, ${tokenExpiraSql})
+                    (nombre, apellido, direccion, telefono, correo, contrasena, id_colonia, rol, fecha_registro, verificado, token_verificacion, token_expira)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'veterinario', NOW(), 0, ?, ${tokenExpiraSql})
             `;
             db.query(sqlUser, [nombre, apellido, direccion, telefono, correo, contrasena, id_colonia, token], (err, result) => {
                 if (err) return db.rollback(() => res.status(500).json({ error: err.message }));
@@ -575,14 +599,24 @@ app.get('/api/veterinaria/:id/detallado', (req, res) => {
 
 // Actualizar datos de una veterinaria
 app.put('/api/veterinarias/:id', (req, res) => {
-    const { nombre_establecimiento, descripcion, correo_negocio, telefono_local, id_colonia, imagen_logo, sitio_web } = req.body;
+    const {
+        nombre_establecimiento,
+        descripcion,
+        correo_negocio,
+        telefono_local,
+        id_colonia,
+        imagen_logo,
+        sitio_web,
+        latitud,
+        longitud
+    } = req.body;
     const sql = `
         UPDATE veterinarias 
         SET nombre_establecimiento = ?, descripcion = ?, correo_negocio = ?, 
-            telefono_local = ?, id_colonia = ?, imagen_logo = ?, sitio_web = ?
+            telefono_local = ?, id_colonia = ?, imagen_logo = ?, sitio_web = ?, latitud = ?, longitud = ?
         WHERE id_vet = ?
     `;
-    db.query(sql, [nombre_establecimiento, descripcion, correo_negocio, telefono_local, id_colonia, imagen_logo, sitio_web, req.params.id], (err, result) => {
+    db.query(sql, [nombre_establecimiento, descripcion, correo_negocio, telefono_local, id_colonia, imagen_logo, sitio_web, latitud ?? null, longitud ?? null, req.params.id], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         if (result.affectedRows === 0) return res.status(404).json({ message: "Veterinaria no encontrada" });
         res.json({ message: "Veterinaria actualizada correctamente" });
@@ -753,7 +787,7 @@ app.get('/api/resenas/:id', (req, res) => {
     });
 });
 
-// ✅ Publicar reseña
+// Publicar reseña
 // Incluye fecha_resena (NOT NULL en la tabla) y maneja el caso de reseña duplicada
 // (resenas_index_1 es UNIQUE sobre id_usuario + id_vet: un usuario solo puede reseñar 1 vez por vet)
 app.post('/api/resenas', (req, res) => {
@@ -863,7 +897,7 @@ function enviarAvisoAdministrativo(correoDestino, nombreUsuario, motivo, esElimi
         : `Hemos recibido un reporte sobre tu comportamiento en la plataforma. Motivo: <strong>${motivo}</strong>.`;
 
     transporter.sendMail({
-        from: '"MIGO - Administración" <bruno19benitez@gmail.com>',
+        from: '"MIGO - Administración" <bm1998337@gmail.com>',
         to: correoDestino,
         subject: asunto,
         html: `<div style="font-family: Arial, sans-serif; color: #223338;">
