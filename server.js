@@ -2,9 +2,59 @@ const express = require('express');
 const mysql = require('mysql2');
 const cors = require('cors');
 const multer = require('multer');
+const path = require('path');
+const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 
 const app = express();
-const upload = multer({ dest: 'uploads/' });
+
+
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: 'bruno19benitez@gmail.com',
+        pass: 'pncs nwnn aaup jnng'
+    }
+});
+
+// URL base del frontend, usada para armar el link de verificación
+const FRONTEND_URL = 'http://localhost:5173';
+
+function enviarCorreoVerificacion(correoDestino, nombre, token) {
+    const link = `http://localhost:4000/api/verificar-cuenta?token=${token}`;
+    return transporter.sendMail({
+        from: '"MIGO - Comunidad de Mascotas" <bruno19benitez@gmail.com>',
+        to: correoDestino,
+        subject: 'Verifica tu cuenta en MIGO',
+        html: `
+            <div style="font-family: Arial, sans-serif; color: #223338; max-width: 500px;">
+                <h2 style="color: #0f9d8e;">¡Hola ${nombre}!</h2>
+                <p>Gracias por registrarte en MIGO. Para activar tu cuenta, confirma tu correo haciendo clic en el siguiente botón:</p>
+                <p style="text-align:center; margin: 24px 0;">
+                    <a href="${link}" style="background:#0f9d8e; color:#fff; padding:12px 24px; border-radius:8px; text-decoration:none; font-weight:bold;">
+                        Verificar mi cuenta
+                    </a>
+                </p>
+                <p style="font-size:13px; color:#7c8a8f;">Si el botón no funciona, copia y pega este enlace en tu navegador:<br>${link}</p>
+                <p style="font-size:13px; color:#7c8a8f;">Este enlace vence en 24 horas.</p>
+            </div>
+        `
+    });
+}
+
+// ✅ Multer configurado para conservar la extensión del archivo original
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, 'uploads/');
+    },
+    filename: (req, file, cb) => {
+        const ext = path.extname(file.originalname); // .jpg, .png, etc.
+        const nombreUnico = Date.now() + '-' + Math.round(Math.random() * 1e9) + ext;
+        cb(null, nombreUnico);
+    }
+});
+
+const upload = multer({ storage });
 
 app.use(cors());
 app.use(express.json());
@@ -37,7 +87,7 @@ function registrarLogLoginFallido(correo, detalle) {
 
 ///////USUARIO////////
 
-// Crear usuario
+// ✅ Crear usuario — genera token de verificación y envía correo
 app.post('/api/usuarios', (req, res) => {
     const { nombre, apellido, correo, contrasena, telefono, direccion, id_colonia, rol } = req.body;
 
@@ -48,14 +98,76 @@ app.post('/api/usuarios', (req, res) => {
             return res.status(400).json({ error: "El correo ya está registrado" });
         }
 
+        const token = crypto.randomBytes(32).toString('hex');
+        // El token vence en 24 horas
+        const tokenExpiraSql = "DATE_ADD(NOW(), INTERVAL 24 HOUR)";
+
         const sql = `
-            INSERT INTO usuarios (nombre, apellido, correo, contrasena, telefono, direccion, id_colonia, rol)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO usuarios 
+                (nombre, apellido, correo, contrasena, telefono, direccion, id_colonia, rol, verificado, token_verificacion, token_expira)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ${tokenExpiraSql})
         `;
-        db.query(sql, [nombre, apellido, correo, contrasena, telefono, direccion, id_colonia, rol], (err, result) => {
+        db.query(sql, [nombre, apellido, correo, contrasena, telefono, direccion, id_colonia, rol, token], async (err, result) => {
             if (err) return res.status(500).json({ error: err.message });
-            res.json({ message: 'Usuario registrado correctamente', id: result.insertId });
+
+            try {
+                await enviarCorreoVerificacion(correo, nombre, token);
+            } catch (mailErr) {
+                console.error("Error al enviar correo de verificación:", mailErr.message);
+                // No tumbamos el registro si falla el correo, pero avisamos en la respuesta
+                return res.json({
+                    message: 'Usuario registrado, pero no se pudo enviar el correo de verificación. Contacta al administrador.',
+                    id: result.insertId
+                });
+            }
+
+            res.json({
+                message: 'Usuario registrado correctamente. Revisa tu correo para verificar tu cuenta.',
+                id: result.insertId
+            });
         });
+    });
+});
+
+// ✅ Verificar cuenta a través del link enviado por correo
+app.get('/api/verificar-cuenta', (req, res) => {
+    const { token } = req.query;
+    if (!token) return res.status(400).send('Token no proporcionado.');
+
+    const sql = `
+        SELECT id_usuario FROM usuarios 
+        WHERE token_verificacion = ? AND token_expira > NOW() AND verificado = 0
+    `;
+    db.query(sql, [token], (err, rows) => {
+        if (err) return res.status(500).send('Error de servidor.');
+
+        if (rows.length === 0) {
+            return res.send(`
+                <div style="font-family: Arial, sans-serif; text-align:center; margin-top:60px;">
+                    <h2 style="color:#b23a3a;">Enlace inválido o vencido</h2>
+                    <p>Solicita un nuevo correo de verificación o contacta a soporte.</p>
+                </div>
+            `);
+        }
+
+        const id_usuario = rows[0].id_usuario;
+        db.query(
+            "UPDATE usuarios SET verificado = 1, token_verificacion = NULL, token_expira = NULL WHERE id_usuario = ?",
+            [id_usuario],
+            (err) => {
+                if (err) return res.status(500).send('Error al verificar la cuenta.');
+
+                res.send(`
+                    <div style="font-family: Arial, sans-serif; text-align:center; margin-top:60px;">
+                        <h2 style="color:#0f9d8e;">¡Cuenta verificada con éxito!</h2>
+                        <p>Ya puedes iniciar sesión en MIGO.</p>
+                        <a href="${FRONTEND_URL}/login" style="display:inline-block; margin-top:16px; background:#0f9d8e; color:#fff; padding:12px 24px; border-radius:8px; text-decoration:none; font-weight:bold;">
+                            Ir a iniciar sesión
+                        </a>
+                    </div>
+                `);
+            }
+        );
     });
 });
 
@@ -75,12 +187,12 @@ app.get('/api/usuarios/:id', (req, res) => {
     });
 });
 
-// Login de usuario
+// ✅ Login de usuario (acepta rol 'usuario' y 'administrador', requiere cuenta verificada)
 app.post('/api/login', (req, res) => {
   const { correo, contrasena } = req.body;
 
   const sql = `
-      SELECT id_usuario, nombre, rol 
+      SELECT id_usuario, nombre, rol, verificado 
       FROM usuarios 
       WHERE correo = ? AND contrasena = ?
   `;
@@ -89,10 +201,23 @@ app.post('/api/login', (req, res) => {
 
     if (results.length > 0) {
       const usuario = results[0];
-      if (usuario.rol !== 'usuario') {
-        registrarLogLoginFallido(correo, "Intento de login como usuario sin rol válido");
-        return res.status(403).json({ message: 'No tienes acceso como usuario' });
+
+      if (usuario.rol !== 'usuario' && usuario.rol !== 'administrador') {
+        registrarLogLoginFallido(correo, "Intento de login con rol no permitido en este formulario: " + usuario.rol);
+        return res.status(403).json({
+          message: 'Este correo pertenece a un veterinario, no a un usuario.',
+          rol: usuario.rol
+        });
       }
+
+      if (usuario.verificado === 0) {
+        registrarLogLoginFallido(correo, "Intento de login con cuenta no verificada");
+        return res.status(403).json({
+          message: 'Debes verificar tu cuenta antes de iniciar sesión. Revisa tu correo.'
+        });
+      }
+
+      delete usuario.verificado;
       res.json(usuario);
     } else {
       registrarLogLoginFallido(correo, "Credenciales incorrectas en login de usuario");
@@ -137,7 +262,7 @@ app.get('/api/especies', (req, res) => {
 
 ////////Publicaciones////////
 
-// ✅ GET publicaciones — incluye IDs raw para poder editar desde el frontend
+// GET publicaciones — incluye IDs raw para poder editar desde el frontend
 app.get('/api/publicaciones', (req, res) => {
     const sql = `
         SELECT 
@@ -172,20 +297,30 @@ app.get('/api/publicaciones', (req, res) => {
     });
 });
 
-// Crear nueva publicación
+// ✅ Crear nueva publicación
+// El trigger trg_publicaciones_estado_inicial asigna id_estado = 'Pendiente' automáticamente,
+// por eso ya NO se envía id_estado desde el backend.
 app.post('/api/publicaciones', (req, res) => {
-    const { id_usuario, id_colonia, id_especie, id_tipo, id_estado, nombre_pet, descripcion } = req.body;
+    const { id_usuario, id_colonia, id_especie, id_tipo, nombre_pet, descripcion } = req.body;
+
+    if (!id_usuario || !id_colonia || !id_especie || !id_tipo || !nombre_pet || !descripcion) {
+        return res.status(400).json({ error: "Faltan datos obligatorios" });
+    }
+
     const sql = `
-        INSERT INTO publicaciones (id_usuario, id_colonia, id_especie, id_tipo, id_estado, nombre_pet, descripcion)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO publicaciones (id_usuario, id_colonia, id_especie, id_tipo, nombre_pet, descripcion, fecha_publi)
+        VALUES (?, ?, ?, ?, ?, ?, NOW())
     `;
-    db.query(sql, [id_usuario, id_colonia, id_especie, id_tipo, id_estado, nombre_pet, descripcion], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
+    db.query(sql, [id_usuario, id_colonia, id_especie, id_tipo, nombre_pet, descripcion], (err, result) => {
+        if (err) {
+            console.error("Error al crear publicación:", err);
+            return res.status(500).json({ error: err.message });
+        }
         res.json({ message: 'Publicación creada', id_publi: result.insertId });
     });
 });
 
-// ✅ Editar publicación — verifica que sea el dueño antes de actualizar
+// Editar publicación — verifica que sea el dueño antes de actualizar
 app.put('/api/publicaciones/:id_publi', (req, res) => {
     const { id_publi } = req.params;
     const { id_usuario, id_colonia, id_especie, id_tipo, nombre_pet, descripcion } = req.body;
@@ -206,6 +341,30 @@ app.put('/api/publicaciones/:id_publi', (req, res) => {
         db.query(sql, [id_colonia, id_especie, id_tipo, nombre_pet, descripcion, id_publi], (err) => {
             if (err) return res.status(500).json({ error: err.message });
             res.json({ message: "Publicación actualizada correctamente" });
+        });
+    });
+});
+
+
+app.delete('/api/publicaciones/:id_publi', (req, res) => {
+    const { id_publi } = req.params;
+    const { id_usuario } = req.body;
+
+    const checkSql = "SELECT id_usuario FROM publicaciones WHERE id_publi = ?";
+    db.query(checkSql, [id_publi], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (rows.length === 0) return res.status(404).json({ message: "Publicación no encontrada" });
+        if (rows[0].id_usuario !== parseInt(id_usuario)) {
+            return res.status(403).json({ message: "No tienes permiso para eliminar esta publicación" });
+        }
+
+        db.query("DELETE FROM fotos_publi WHERE id_publi = ?", [id_publi], () => {
+            db.query("DELETE FROM comentarios WHERE id_publi = ?", [id_publi], () => {
+                db.query("DELETE FROM publicaciones WHERE id_publi = ?", [id_publi], (err) => {
+                    if (err) return res.status(500).json({ error: err.message });
+                    res.json({ message: "Publicación eliminada correctamente" });
+                });
+            });
         });
     });
 });
@@ -234,12 +393,12 @@ app.post('/api/fotos/:id_publi', upload.single('foto'), (req, res) => {
 
 ////////VETERINARIO////////
 
-// Login de veterinario
+// Login de veterinario (requiere cuenta verificada)
 app.post('/api/login-vet', (req, res) => {
   const { correo, contrasena } = req.body;
 
   const sql = `
-      SELECT u.id_usuario, u.nombre, u.rol, v.id_vet 
+      SELECT u.id_usuario, u.nombre, u.rol, u.verificado, v.id_vet 
       FROM usuarios u
       LEFT JOIN veterinarias v ON u.id_usuario = v.id_usuario
       WHERE u.correo = ? AND u.contrasena = ?
@@ -253,6 +412,13 @@ app.post('/api/login-vet', (req, res) => {
         registrarLogLoginFallido(correo, "Intento de login como veterinario sin rol válido");
         return res.status(403).json({ message: 'No tienes acceso como veterinario' });
       }
+
+      if (usuario.verificado === 0) {
+        registrarLogLoginFallido(correo, "Intento de login de veterinario con cuenta no verificada");
+        return res.status(403).json({ message: 'Debes verificar tu cuenta antes de iniciar sesión. Revisa tu correo.' });
+      }
+
+      delete usuario.verificado;
       res.json({ success: true, usuario });
     } else {
       registrarLogLoginFallido(correo, "Credenciales inválidas en login de veterinario");
@@ -261,7 +427,7 @@ app.post('/api/login-vet', (req, res) => {
   });
 });
 
-// Registro de veterinario
+// ✅ Registro de veterinario — ahora también requiere verificar el correo
 app.post('/api/registro-vet', (req, res) => {
     const { nombre, apellido, correo, contrasena, id_colonia, nombre_establecimiento, direccion, telefono } = req.body;
 
@@ -270,14 +436,18 @@ app.post('/api/registro-vet', (req, res) => {
         if (err) return res.status(500).json({ error: err.message });
         if (rows.length > 0) return res.status(400).json({ error: "El correo ya está registrado" });
 
+        const token = crypto.randomBytes(32).toString('hex');
+        const tokenExpiraSql = "DATE_ADD(NOW(), INTERVAL 24 HOUR)";
+
         db.beginTransaction((err) => {
             if (err) return res.status(500).json({ error: "Error de conexión" });
 
             const sqlUser = `
-                INSERT INTO usuarios (nombre, apellido, direccion, telefono, correo, contrasena, id_colonia, rol)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'veterinario')
+                INSERT INTO usuarios 
+                    (nombre, apellido, direccion, telefono, correo, contrasena, id_colonia, rol, verificado, token_verificacion, token_expira)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'veterinario', 0, ?, ${tokenExpiraSql})
             `;
-            db.query(sqlUser, [nombre, apellido, direccion, telefono, correo, contrasena, id_colonia], (err, result) => {
+            db.query(sqlUser, [nombre, apellido, direccion, telefono, correo, contrasena, id_colonia, token], (err, result) => {
                 if (err) return db.rollback(() => res.status(500).json({ error: err.message }));
 
                 const id_usuario = result.insertId;
@@ -285,9 +455,19 @@ app.post('/api/registro-vet', (req, res) => {
                 db.query(sqlVet, [id_usuario, nombre_establecimiento, id_colonia], (err) => {
                     if (err) return db.rollback(() => res.status(500).json({ error: err.message }));
 
-                    db.commit((err) => {
+                    db.commit(async (err) => {
                         if (err) return db.rollback(() => res.status(500).json({ error: "Error al guardar" }));
-                        res.json({ message: 'Registro exitoso' });
+
+                        try {
+                            await enviarCorreoVerificacion(correo, nombre, token);
+                        } catch (mailErr) {
+                            console.error("Error al enviar correo de verificación (vet):", mailErr.message);
+                            return res.json({
+                                message: 'Negocio registrado, pero no se pudo enviar el correo de verificación. Contacta al administrador.'
+                            });
+                        }
+
+                        res.json({ message: 'Registro exitoso. Revisa tu correo para verificar tu cuenta antes de iniciar sesión.' });
                     });
                 });
             });
@@ -439,6 +619,7 @@ app.get('/api/horarios/:idVet', (req, res) => {
 });
 
 // Actualizar horarios de una veterinaria
+// Requiere UNIQUE KEY (id_vet, id_dia) en horarios_vet para que el UPSERT funcione correctamente
 app.put('/api/horarios/:idVet', (req, res) => {
     const { idVet } = req.params;
     const horarios = req.body;
@@ -572,20 +753,30 @@ app.get('/api/resenas/:id', (req, res) => {
     });
 });
 
-// Publicar reseña
+// ✅ Publicar reseña
+// Incluye fecha_resena (NOT NULL en la tabla) y maneja el caso de reseña duplicada
+// (resenas_index_1 es UNIQUE sobre id_usuario + id_vet: un usuario solo puede reseñar 1 vez por vet)
 app.post('/api/resenas', (req, res) => {
-    console.log("Datos recibidos en el servidor:", req.body);
     const { id_vet, id_usuario, comentario, calificacion } = req.body;
 
     if (!id_vet || !id_usuario) {
         return res.status(400).json({ message: "Faltan datos obligatorios" });
     }
 
-    db.query("INSERT INTO resenas (id_vet, id_usuario, comentario, calificacion) VALUES (?, ?, ?, ?)",
-        [id_vet, id_usuario, comentario, calificacion], (err) => {
-            if (err) return res.status(500).json({ error: err.message });
+    db.query(
+        "INSERT INTO resenas (id_vet, id_usuario, comentario, calificacion, fecha_resena) VALUES (?, ?, ?, ?, NOW())",
+        [id_vet, id_usuario, comentario, calificacion],
+        (err) => {
+            if (err) {
+                if (err.code === 'ER_DUP_ENTRY') {
+                    return res.status(409).json({ message: "Ya dejaste una reseña para esta veterinaria" });
+                }
+                console.error("Error al publicar reseña:", err);
+                return res.status(500).json({ error: err.message });
+            }
             res.json({ message: 'Reseña publicada con éxito' });
-        });
+        }
+    );
 });
 
 // Editar reseña
@@ -654,4 +845,180 @@ app.put('/api/comentarios/:id_comentario', (req, res) => {
         });
 });
 
-app.listen(4000, () => console.log('Servidor corriendo en puerto 4000 🏃‍♂️'));
+////////ADMINISTRADOR////////
+
+function verificarAdmin(id_admin, callback) {
+    db.query("SELECT rol FROM usuarios WHERE id_usuario = ?", [id_admin], (err, rows) => {
+        if (err) return callback(err, false);
+        if (rows.length === 0 || rows[0].rol !== 'administrador') return callback(null, false);
+        callback(null, true);
+    });
+}
+
+function enviarAvisoAdministrativo(correoDestino, nombreUsuario, motivo, esEliminacion) {
+    const asunto = esEliminacion ? 'Aviso importante: Publicación eliminada' : 'Advertencia de MIGO';
+    const titulo = esEliminacion ? 'Publicación eliminada por incumplimiento' : 'Aviso de advertencia';
+    const mensaje = esEliminacion 
+        ? `Lamentamos informarte que tu publicación ha sido eliminada debido a: <strong>${motivo}</strong>.`
+        : `Hemos recibido un reporte sobre tu comportamiento en la plataforma. Motivo: <strong>${motivo}</strong>.`;
+
+    transporter.sendMail({
+        from: '"MIGO - Administración" <bruno19benitez@gmail.com>',
+        to: correoDestino,
+        subject: asunto,
+        html: `<div style="font-family: Arial, sans-serif; color: #223338;">
+                <h2 style="color: #d35400;">${titulo}</h2>
+                <p>Hola <strong>${nombreUsuario}</strong>,</p>
+                <p>${mensaje}</p>
+               </div>`
+    }).catch(err => console.error("Error enviando correo:", err)); // Agregamos catch para que no detenga el servidor
+}
+
+// Eliminar cualquier publicación (sin validar dueño, solo que quien pide sea admin)
+app.delete('/api/admin/publicaciones/:id_publi', (req, res) => {
+    const { id_publi } = req.params;
+    const { id_admin } = req.body;
+
+    verificarAdmin(id_admin, (err, esAdmin) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!esAdmin) return res.status(403).json({ message: "No tienes permisos" });
+
+        // 1. Obtener datos del usuario ANTES de borrar
+        db.query("SELECT u.correo, u.nombre FROM usuarios u JOIN publicaciones p ON u.id_usuario = p.id_usuario WHERE p.id_publi = ?", [id_publi], (err, results) => {
+            const usuario = results[0];
+
+            db.query("DELETE FROM fotos_publi WHERE id_publi = ?", [id_publi], () => {
+                db.query("DELETE FROM comentarios WHERE id_publi = ?", [id_publi], () => {
+                    db.query("DELETE FROM publicaciones WHERE id_publi = ?", [id_publi], (err, result) => {
+                        if (err) return res.status(500).json({ error: err.message });
+                        if (result.affectedRows === 0) return res.status(404).json({ message: "No encontrada" });
+
+                        // 2. Enviar correo si encontramos al usuario
+                        if (usuario) {
+                            enviarAvisoAdministrativo(usuario.correo, usuario.nombre, 'Incumplimiento de normas', true);
+                        }
+                        res.json({ message: "Publicación eliminada y usuario notificado" });
+                    });
+                });
+            });
+        });
+    });
+});
+
+// Reportar a un usuario (queda registrado el motivo y se marca su estado)
+app.post('/api/admin/reportar-usuario', (req, res) => {
+    const { id_usuario_reportado, id_admin, motivo } = req.body;
+
+    verificarAdmin(id_admin, (err, esAdmin) => {
+        if (!esAdmin) return res.status(403).json({ message: "No tienes permisos" });
+
+        // 1. Obtener datos del usuario a reportar
+        db.query("SELECT correo, nombre FROM usuarios WHERE id_usuario = ?", [id_usuario_reportado], (err, results) => {
+            const usuario = results[0];
+
+            db.query("INSERT INTO reportes_usuario (id_usuario_reportado, id_admin, motivo) VALUES (?, ?, ?)", [id_usuario_reportado, id_admin, motivo], (err) => {
+                db.query("UPDATE usuarios SET estado = 'reportado' WHERE id_usuario = ?", [id_usuario_reportado], (err) => {
+                    
+                    // 2. Enviar correo de advertencia
+                    if (usuario) {
+                        enviarAvisoAdministrativo(usuario.correo, usuario.nombre, motivo, false);
+                    }
+                    res.json({ message: "Usuario reportado y notificado" });
+                });
+            });
+        });
+    });
+});
+
+// Listado de reportes hechos (opcional, útil para un historial en el panel)
+app.get('/api/admin/reportes', (req, res) => {
+    const sql = `
+        SELECT r.id_reporte, r.motivo, r.fecha_reporte,
+               CONCAT(u.nombre, ' ', u.apellido) AS usuario_reportado,
+               u.correo AS correo_reportado,
+               CONCAT(a.nombre, ' ', a.apellido) AS admin_reporto
+        FROM reportes_usuario r
+        JOIN usuarios u ON r.id_usuario_reportado = u.id_usuario
+        JOIN usuarios a ON r.id_admin = a.id_usuario
+        ORDER BY r.fecha_reporte DESC
+    `;
+    db.query(sql, (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
+
+app.get('/api/usuarios', (req, res) => {
+    // Ajusta 'admin' al valor exacto que usas en tu base de datos para identificar al administrador
+    const sql = `
+        SELECT id_usuario, nombre, correo, rol, telefono 
+        FROM usuarios
+        WHERE rol != 'administrador'
+    `;
+    db.query(sql, (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
+
+app.delete('/api/usuarios/:id', async (req, res) => {
+    const id = req.params.id;
+
+    const executeQuery = (sql, params) => {
+        return new Promise((resolve, reject) => {
+            db.query(sql, params, (err, result) => {
+                if (err) return reject(err);
+                resolve(result);
+            });
+        });
+    };
+
+    try {
+        // 1) Fotos de las publicaciones del usuario (hijo de publicaciones)
+        await executeQuery(
+            "DELETE FROM fotos_publi WHERE id_publi IN (SELECT id_publi FROM publicaciones WHERE id_usuario = ?)",
+            [id]
+        );
+
+        // 2) Comentarios hechos POR el usuario, y comentarios EN sus publicaciones
+        await executeQuery("DELETE FROM comentarios WHERE id_usuario = ?", [id]);
+        await executeQuery(
+            "DELETE FROM comentarios WHERE id_publi IN (SELECT id_publi FROM publicaciones WHERE id_usuario = ?)",
+            [id]
+        );
+
+        // 3) Reseñas hechas por el usuario (a veterinarias)
+        await executeQuery("DELETE FROM resenas WHERE id_usuario = ?", [id]);
+
+        // 4) Ahora sí, las publicaciones del usuario
+        await executeQuery("DELETE FROM publicaciones WHERE id_usuario = ?", [id]);
+
+        // 5) Si el usuario es veterinario: reseñas A su vet, horarios, servicios y la veterinaria
+        await executeQuery(
+            "DELETE FROM resenas WHERE id_vet IN (SELECT id_vet FROM veterinarias WHERE id_usuario = ?)",
+            [id]
+        );
+        await executeQuery(
+            "DELETE FROM horarios_vet WHERE id_vet IN (SELECT id_vet FROM veterinarias WHERE id_usuario = ?)",
+            [id]
+        );
+        await executeQuery(
+            "DELETE FROM vet_servicios WHERE id_vet IN (SELECT id_vet FROM veterinarias WHERE id_usuario = ?)",
+            [id]
+        );
+        await executeQuery("DELETE FROM veterinarias WHERE id_usuario = ?", [id]);
+
+        // 6) Finalmente, el usuario
+        const result = await executeQuery("DELETE FROM usuarios WHERE id_usuario = ?", [id]);
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: "Usuario no encontrado" });
+        }
+
+        res.json({ message: "Usuario eliminado correctamente" });
+    } catch (err) {
+        console.error("Error al eliminar usuario:", err);
+        res.status(500).json({ message: "Error: " + err.message });
+    }
+});
+
+app.listen(4000, () => console.log('Migo corriendo  🏃‍♂️'));
